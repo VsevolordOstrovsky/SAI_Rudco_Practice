@@ -57,17 +57,21 @@ double TreeResolve::CalculateEntropy(const QVector<QStringList>& data)
         (row.last() == "Yes") ? yes++ : no++;
 
     double total = yes + no;
-    if (total == 0) return 0;
+    if (total == 0)
+        return 0;
 
     double p1 = yes / total;
     double p2 = no / total;
 
-    if (p1 == 0 || p2 == 0) return 0;
+    if (p1 == 0 || p2 == 0)
+        return 0;
 
     return E(p1, p2);
 }
 
-double TreeResolve::CalculateInformationGain(const QVector<QStringList>& data, int attrIndex, double parentEntropy)
+double TreeResolve::CalculateInformationGain(const QVector<QStringList>& data,
+                                             int attrIndex,
+                                             double parentEntropy)
 {
     QMap<QString, QVector<QStringList>> groups;
 
@@ -94,14 +98,17 @@ TreeNode* TreeResolve::BuildDecisionTree(
 {
     TreeNode* node = new TreeNode();
 
-    // Проверка на одинаковый класс
     QString first = data[0].last();
     bool same = true;
 
     for (auto r : data)
-        if (r.last() != first) { same = false; break; }
+        if (r.last() != first)
+        {
+            same = false; break;
+        }
 
-    if (same) {
+    if (same)
+    {
         node->isLeaf = true;
         node->decision = first;
         return node;
@@ -115,11 +122,13 @@ TreeNode* TreeResolve::BuildDecisionTree(
 
     for (int i = 1; i < attributes.size() - 1; i++)
     {
-        if (usedAttributes.contains(i)) continue;
+        if (usedAttributes.contains(i))
+            continue;
 
         double ig = CalculateInformationGain(data, i, parentEntropy);
 
-        if (ig > bestIG) {
+        if (ig > bestIG)
+        {
             bestIG = ig;
             bestAttr = i;
         }
@@ -251,7 +260,9 @@ void TreeVisualization::DrawNode(TreeNode* node, qreal x, qreal y, qreal width)
     }
 }
 
-void TreeVisualization::DrawEdge(qreal x1, qreal y1, qreal x2, qreal y2, const QString& label)
+void TreeVisualization::DrawEdge(qreal x1, qreal y1,
+                                 qreal x2, qreal y2,
+                                 const QString& label)
 {
     scene->addLine(x1, y1, x2, y2);
 
