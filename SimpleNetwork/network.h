@@ -15,14 +15,17 @@ QT_END_NAMESPACE
 // Forward declaration
 class NeuralNetworkWidget;
 
+// ===================== КЛАСС НЕЙРОН =====================
 class Neuron {
 public:
     Neuron();
     Neuron(int numInputs);
+
     double forward(const QVector<double>& inputs);
     void calculateOutputDelta(double target);
     void calculateHiddenDelta(const QVector<Neuron>& nextLayer, int neuronIndex);
     void updateWeights(const QVector<double>& inputs, double learningRate, double momentum);
+
     double getOutput() const { return output; }
     double getDelta() const { return delta; }
     double getWeight(int index) const { return weights[index]; }
@@ -49,6 +52,7 @@ private:
     double delta;
 };
 
+// ===================== КЛАСС НЕЙРОННАЯ СЕТЬ =====================
 class Network : public QMainWindow
 {
     Q_OBJECT
@@ -56,13 +60,16 @@ class Network : public QMainWindow
 public:
     Network(QWidget *parent = nullptr);
     ~Network();
+
     double forward(const QVector<double>& inputs);
     void backward(double target);
     void updateWeights(double learningRate, double momentum);
     void trainStep(double input1, double input2, double target);
     void setCurrentStep(int step);
     int getTotalSteps() const { return trainingSteps.size(); }
-    void restoreWeights(const QVector<QVector<QVector<double>>>& weightsHistory);
+    void restoreWeights(const QVector<QVector<QVector<double>>>& weightsHistory,
+                        const QVector<QVector<double>>& biasHistory);
+    void goToStep(int step);  // Новый метод для перехода на шаг
 
 private slots:
     void button_action();
@@ -72,6 +79,8 @@ private slots:
     void on_BTN_Next_released();
     void on_BTN_Back_pressed();
     void on_BTN_Back_released();
+    void startAutoNext();  // Новый слот
+    void startAutoBack();  // Новый слот
     void autoNextStep();
     void autoBackStep();
     void showStepDialog();
@@ -92,12 +101,14 @@ private:
     QVector<int> layerSizes;
     QVector<QVector<double>> layerOutputs;
 
-    NeuralNetworkWidget* neuralWidget;  // Виджет для отрисовки
+    NeuralNetworkWidget* neuralWidget;
 
     struct TrainingStep {
         QVector<double> inputs;
         double target;
         QVector<QVector<QVector<double>>> weightsHistory;
+        QVector<QVector<double>> biasHistory;
+        QVector<QVector<double>> layerOutputsSnapshot;  // снимок выходов всех нейронов
         double output;
         double error;
     };
@@ -107,9 +118,10 @@ private:
     double currentMomentum;
 
     QTimer* autoNextTimer;
+    QTimer* autoNextStepTimer;
     QTimer* autoBackTimer;
-
-    double targetFunction(double x1, double x2);
+    QTimer* autoBackStepTimer;
+    bool isAutoScrolling;  // Флаг для отслеживания автолистания
 };
 
 #endif // NETWORK_H

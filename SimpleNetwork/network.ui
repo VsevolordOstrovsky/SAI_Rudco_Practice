@@ -140,6 +140,9 @@
              </property>
             </widget>
            </item>
+           <item>
+            <widget class="QLineEdit" name="LE_Result"/>
+           </item>
           </layout>
          </widget>
         </item>

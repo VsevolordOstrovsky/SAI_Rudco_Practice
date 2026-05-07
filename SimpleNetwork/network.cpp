@@ -8,7 +8,8 @@
 #include <QMessageBox>
 #include <QVBoxLayout>
 
-// ===================== Neuron Implementation =====================
+// ===================== РЕАЛИЗАЦИЯ НЕЙРОНА =====================
+
 Neuron::Neuron() {
     weights.resize(0);
     prevWeightDelta.resize(0);
@@ -80,7 +81,8 @@ void Neuron::printWeights() const {
     qDebug() << "Bias:" << bias << "Weights:" << weights;
 }
 
-// ===================== Network Implementation =====================
+// ===================== РЕАЛИЗАЦИЯ НЕЙРОННОЙ СЕТИ =====================
+
 Network::Network(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::Network)
@@ -88,6 +90,11 @@ Network::Network(QWidget *parent)
     , currentLearningRate(0.1)
     , currentMomentum(0.9)
     , neuralWidget(nullptr)
+    , autoNextTimer(nullptr)
+    , autoNextStepTimer(nullptr)
+    , autoBackTimer(nullptr)
+    , autoBackStepTimer(nullptr)
+    , isAutoScrolling(false)
 {
     ui->setupUi(this);
 
@@ -110,21 +117,32 @@ Network::Network(QWidget *parent)
     ui->PTE_ShowLog->setLineWrapMode(QPlainTextEdit::NoWrap);
     ui->PTE_ShowLog->document()->setMaximumBlockCount(10000);
 
+    // ========== НАСТРОЙКА ТАЙМЕРОВ ДЛЯ АВТОЛИСТАНИЯ ==========
     autoNextTimer = new QTimer(this);
     autoBackTimer = new QTimer(this);
-    autoNextTimer->setInterval(100);
-    autoBackTimer->setInterval(100);
+    autoNextTimer->setInterval(500);
+    autoBackTimer->setInterval(500);
+    autoNextTimer->setSingleShot(true);
+    autoBackTimer->setSingleShot(true);
 
-    connect(autoNextTimer, &QTimer::timeout, this, &Network::autoNextStep);
-    connect(autoBackTimer, &QTimer::timeout, this, &Network::autoBackStep);
+    autoNextStepTimer = new QTimer(this);
+    autoBackStepTimer = new QTimer(this);
+    autoNextStepTimer->setInterval(100);
+    autoBackStepTimer->setInterval(100);
+
+    connect(autoNextTimer, &QTimer::timeout, this, &Network::startAutoNext);
+    connect(autoBackTimer, &QTimer::timeout, this, &Network::startAutoBack);
+    connect(autoNextStepTimer, &QTimer::timeout, this, &Network::autoNextStep);
+    connect(autoBackStepTimer, &QTimer::timeout, this, &Network::autoBackStep);
 
     ui->BTN_Next->setContextMenuPolicy(Qt::CustomContextMenu);
     ui->BTN_Back->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    ui->DSB_SpeedLearn->setValue(0.5);
-    ui->DSB_Moment->setValue(0.9);
+    ui->DSB_SpeedLearn->setValue(0.3);
+    ui->DSB_Moment->setValue(0.1);
 
-    // Начальное обновление отрисовки
+    ui->LE_Result->setText("0.9");
+
     updateVisualization();
 }
 
@@ -161,8 +179,6 @@ void Network::init_NeuralNetwork() {
 void Network::init_connections()
 {
     connect(ui->pushButton, &QPushButton::clicked, this, &Network::button_action);
-    connect(ui->BTN_Next, &QPushButton::clicked, this, &Network::on_BTN_Next_clicked);
-    connect(ui->BTN_Back, &QPushButton::clicked, this, &Network::on_BTN_Back_clicked);
 
     connect(ui->BTN_Next, &QPushButton::pressed, this, &Network::on_BTN_Next_pressed);
     connect(ui->BTN_Next, &QPushButton::released, this, &Network::on_BTN_Next_released);
@@ -177,12 +193,15 @@ void Network::init_Validator()
 {
     QDoubleValidator *validator_FirstInput = new QDoubleValidator(-1000.0, 1000.0, 3, ui->LE_FirstInput);
     QDoubleValidator *validator_SecondInput = new QDoubleValidator(-1000.0, 1000.0, 3, ui->LE_SecondInput);
+    QDoubleValidator *validator_Result = new QDoubleValidator(0.0, 1.0, 3, ui->LE_Result);
 
     validator_FirstInput->setNotation(QDoubleValidator::StandardNotation);
     validator_SecondInput->setNotation(QDoubleValidator::StandardNotation);
+    validator_Result->setNotation(QDoubleValidator::StandardNotation);
 
     ui->LE_FirstInput->setValidator(validator_FirstInput);
     ui->LE_SecondInput->setValidator(validator_SecondInput);
+    ui->LE_Result->setValidator(validator_Result);
 }
 
 void Network::addLog(const QString& message, const QString& color) {
@@ -191,17 +210,20 @@ void Network::addLog(const QString& message, const QString& color) {
 }
 
 double Network::forward(const QVector<double>& inputs) {
+    // Устанавливаем входные значения
     for (int i = 0; i < layerSizes[0]; i++) {
         layerOutputs[0][i] = inputs[i];
         layers[0][i].setOutput(inputs[i]);
     }
 
+    // Прямое распространение по слоям
     for (int layer = 1; layer < layers.size(); layer++) {
         for (int neuron = 0; neuron < layers[layer].size(); neuron++) {
             layerOutputs[layer][neuron] = layers[layer][neuron].forward(layerOutputs[layer-1]);
         }
     }
 
+    // Обновляем визуализацию
     updateVisualization();
 
     return layerOutputs.last().first();
@@ -229,11 +251,15 @@ void Network::updateWeights(double learningRate, double momentum) {
     }
 }
 
-void Network::restoreWeights(const QVector<QVector<QVector<double>>>& weightsHistory) {
+void Network::restoreWeights(const QVector<QVector<QVector<double>>>& weightsHistory,
+                             const QVector<QVector<double>>& biasHistory) {
     for (int layer = 1; layer < layers.size(); layer++) {
         for (int neuron = 0; neuron < layers[layer].size(); neuron++) {
             for (int weight = 0; weight < layerSizes[layer-1]; weight++) {
                 layers[layer][neuron].setWeight(weight, weightsHistory[layer][neuron][weight]);
+            }
+            if (layer < biasHistory.size() && neuron < biasHistory[layer].size()) {
+                layers[layer][neuron].setBias(biasHistory[layer][neuron]);
             }
         }
     }
@@ -242,28 +268,41 @@ void Network::restoreWeights(const QVector<QVector<QVector<double>>>& weightsHis
 void Network::trainStep(double input1, double input2, double target) {
     QVector<double> inputs = {input1, input2};
 
+    // Сохраняем историю весов ДО обновления
     QVector<QVector<QVector<double>>> weightsHistory;
+    QVector<QVector<double>> biasHistory;
     weightsHistory.resize(layers.size());
+    biasHistory.resize(layers.size());
     for (int layer = 1; layer < layers.size(); layer++) {
         weightsHistory[layer].resize(layers[layer].size());
+        biasHistory[layer].resize(layers[layer].size());
         for (int neuron = 0; neuron < layers[layer].size(); neuron++) {
             weightsHistory[layer][neuron].resize(layerSizes[layer-1]);
             for (int weight = 0; weight < layerSizes[layer-1]; weight++) {
                 weightsHistory[layer][neuron][weight] = layers[layer][neuron].getWeight(weight);
             }
+            biasHistory[layer][neuron] = layers[layer][neuron].getPrevBiasDelta();
         }
     }
 
+    // Прямой проход
     double output = forward(inputs);
     double error = target - output;
 
+    // Снимок выходов всех нейронов сразу после forward
+    QVector<QVector<double>> layerOutputsSnapshot = layerOutputs;
+
+    // Обратный проход и обновление весов
     backward(target);
     updateWeights(currentLearningRate, currentMomentum);
 
+    // Сохраняем шаг
     TrainingStep step;
     step.inputs = inputs;
     step.target = target;
     step.weightsHistory = weightsHistory;
+    step.biasHistory = biasHistory;
+    step.layerOutputsSnapshot = layerOutputsSnapshot;
     step.output = output;
     step.error = qAbs(error);
 
@@ -271,32 +310,55 @@ void Network::trainStep(double input1, double input2, double target) {
     currentStepIndex = trainingSteps.size() - 1;
 }
 
-void Network::setCurrentStep(int step) {
+// ОСНОВНОЙ МЕТОД ДЛЯ ПЕРЕКЛЮЧЕНИЯ ШАГОВ
+void Network::goToStep(int step) {
+    if (trainingSteps.isEmpty()) return;
     if (step < 0 || step >= trainingSteps.size()) return;
+    if (step == currentStepIndex) return;
 
     currentStepIndex = step;
     const TrainingStep& stepData = trainingSteps[step];
 
-    restoreWeights(stepData.weightsHistory);
-    forward(stepData.inputs);
+    // Жёстко берём сохранённые выходы нейронов — без пересчёта forward()
+    layerOutputs = stepData.layerOutputsSnapshot;
 
+    // Строим структуру весов для виджета из снимка шага
+    QVector<QVector<QVector<double>>> widgetWeights;
+    widgetWeights.resize(layers.size());
+    for (int layer = 0; layer < layers.size(); layer++) {
+        widgetWeights[layer].resize(layerSizes[layer]);
+        for (int neuron = 0; neuron < layerSizes[layer]; neuron++) {
+            if (layer == 0) {
+                widgetWeights[layer][neuron].resize(0);
+            } else {
+                widgetWeights[layer][neuron].resize(layerSizes[layer-1]);
+                for (int w = 0; w < layerSizes[layer-1]; w++) {
+                    widgetWeights[layer][neuron][w] = stepData.weightsHistory[layer][neuron][w];
+                }
+            }
+        }
+    }
+
+    // Обновляем виджет напрямую из снимка
+    if (neuralWidget) {
+        neuralWidget->setLayerSizes(layerSizes);
+        neuralWidget->setLayerOutputs(stepData.layerOutputsSnapshot);
+        neuralWidget->setWeights(widgetWeights);
+        neuralWidget->update();
+    }
+
+    // Обновляем текстовую информацию
     updateDisplay();
 }
 
-double Network::targetFunction(double x1, double x2) {
-    double normalized_x1 = (x1 + 1000.0) / 2000.0;
-    double normalized_x2 = (x2 + 1000.0) / 2000.0;
-
-    double result = 0;
-    if (normalized_x1 > 0.5 && normalized_x2 > 0.5) result = 1.0;
-    else if (normalized_x1 < 0.5 && normalized_x2 < 0.5) result = 1.0;
-    else result = 0.0;
-    return result;
+void Network::setCurrentStep(int step) {
+    goToStep(step);
 }
 
 void Network::button_action()
 {
-    double val1 = 0.0, val2 = 0.0;
+    double val1 = 0.0, val2 = 0.0, target = 0.0;
+
     if(ui->LE_FirstInput->text().isEmpty()) {
         val1 = 0.0;
     } else {
@@ -309,6 +371,14 @@ void Network::button_action()
         val2 = ui->LE_SecondInput->text().replace(",",".").toDouble();
     }
 
+    if(ui->LE_Result->text().isEmpty()) {
+        target = 0.5;
+    } else {
+        target = ui->LE_Result->text().replace(",",".").toDouble();
+        if (target < 0.0) target = 0.0;
+        if (target > 1.0) target = 1.0;
+    }
+
     currentLearningRate = ui->DSB_SpeedLearn->value();
     currentMomentum = ui->DSB_Moment->value();
 
@@ -316,9 +386,7 @@ void Network::button_action()
     addLog("НАЧАЛО ОБУЧЕНИЯ", "yellow");
     addLog(QString("Скорость обучения: %1, Момент: %2").arg(currentLearningRate).arg(currentMomentum), "cyan");
     addLog(QString("Входные значения: [%1, %2]").arg(val1).arg(val2), "cyan");
-
-    double target = targetFunction(val1, val2);
-    addLog(QString("Целевое значение: %1").arg(target), "magenta");
+    addLog(QString("Целевое значение (из LE_Result): %1").arg(target), "magenta");
 
     trainingSteps.clear();
 
@@ -326,22 +394,32 @@ void Network::button_action()
         trainStep(val1, val2, target);
 
         if (epoch % 100 == 0 && epoch > 0) {
-            addLog(QString("Шаг %1: Выход = %2, Ошибка = %3")
+            addLog(QString("Шаг %1: Выход = %2, Ошибка = %3, Цель = %4")
                        .arg(epoch)
                        .arg(trainingSteps.last().output, 0, 'f', 6)
-                       .arg(trainingSteps.last().error, 0, 'f', 6), "lightgray");
+                       .arg(trainingSteps.last().error, 0, 'f', 6)
+                       .arg(target, 0, 'f', 4), "lightgray");
         }
     }
 
     const TrainingStep& finalStep = trainingSteps.last();
     addLog("========================================", "gray");
     addLog("ОБУЧЕНИЕ ЗАВЕРШЕНО", "green");
-    addLog(QString("Финальный выход: %1").arg(finalStep.output, 0, 'f', 6), "lime");
+    addLog(QString("Целевое значение: %1").arg(target, 0, 'f', 4), "magenta");
+    addLog(QString("Финальный выход сети: %1").arg(finalStep.output, 0, 'f', 6), "lime");
     addLog(QString("Финальная ошибка: %1").arg(finalStep.error, 0, 'f', 6), "lime");
+
+    double accuracy = (1.0 - finalStep.error) * 100;
+    if (finalStep.error < 0.1) {
+        addLog(QString("✅ Отличный результат! Точность: %1%").arg(accuracy, 0, 'f', 2), "green");
+    } else if (finalStep.error < 0.2) {
+        addLog(QString("👍 Хороший результат. Точность: %1%").arg(accuracy, 0, 'f', 2), "yellow");
+    } else {
+        addLog(QString("⚠️ Результат можно улучшить. Точность: %1%").arg(accuracy, 0, 'f', 2), "red");
+    }
     addLog("========================================", "gray");
 
-    currentStepIndex = trainingSteps.size() - 1;
-    updateDisplay();
+    goToStep(trainingSteps.size() - 1);
 }
 
 void Network::on_BTN_Next_clicked() {
@@ -351,8 +429,7 @@ void Network::on_BTN_Next_clicked() {
     }
 
     if (currentStepIndex < trainingSteps.size() - 1) {
-        currentStepIndex++;
-        setCurrentStep(currentStepIndex);
+        goToStep(currentStepIndex + 1);
     } else {
         addLog("Это последний шаг обучения", "yellow");
     }
@@ -365,8 +442,7 @@ void Network::on_BTN_Back_clicked() {
     }
 
     if (currentStepIndex > 0) {
-        currentStepIndex--;
-        setCurrentStep(currentStepIndex);
+        goToStep(currentStepIndex - 1);
     } else {
         addLog("Это первый шаг обучения", "yellow");
     }
@@ -374,37 +450,69 @@ void Network::on_BTN_Back_clicked() {
 
 void Network::on_BTN_Next_pressed() {
     if (trainingSteps.isEmpty()) return;
-    autoNextTimer->start();
+    if (!autoNextTimer->isActive() && !autoNextStepTimer->isActive()) {
+        autoNextTimer->start();
+    }
 }
 
 void Network::on_BTN_Next_released() {
+    bool wasAutoScrolling = isAutoScrolling;
     autoNextTimer->stop();
+    autoNextStepTimer->stop();
+    isAutoScrolling = false;
+
+    if (!wasAutoScrolling) {
+        on_BTN_Next_clicked();
+    }
 }
 
 void Network::on_BTN_Back_pressed() {
     if (trainingSteps.isEmpty()) return;
-    autoBackTimer->start();
+    if (!autoBackTimer->isActive() && !autoBackStepTimer->isActive()) {
+        autoBackTimer->start();
+    }
 }
 
 void Network::on_BTN_Back_released() {
+    bool wasAutoScrolling = isAutoScrolling;
     autoBackTimer->stop();
+    autoBackStepTimer->stop();
+    isAutoScrolling = false;
+
+    if (!wasAutoScrolling) {
+        on_BTN_Back_clicked();
+    }
+}
+
+void Network::startAutoNext() {
+    if (!autoNextStepTimer->isActive()) {
+        isAutoScrolling = true;
+        autoNextStepTimer->start();
+    }
+}
+
+void Network::startAutoBack() {
+    if (!autoBackStepTimer->isActive()) {
+        isAutoScrolling = true;
+        autoBackStepTimer->start();
+    }
 }
 
 void Network::autoNextStep() {
     if (currentStepIndex < trainingSteps.size() - 1) {
-        currentStepIndex++;
-        setCurrentStep(currentStepIndex);
+        goToStep(currentStepIndex + 1);
     } else {
-        autoNextTimer->stop();
+        autoNextStepTimer->stop();
+        isAutoScrolling = false;
     }
 }
 
 void Network::autoBackStep() {
     if (currentStepIndex > 0) {
-        currentStepIndex--;
-        setCurrentStep(currentStepIndex);
+        goToStep(currentStepIndex - 1);
     } else {
-        autoBackTimer->stop();
+        autoBackStepTimer->stop();
+        isAutoScrolling = false;
     }
 }
 
@@ -427,7 +535,7 @@ void Network::showStepDialog() {
                                           &ok);
 
     if (ok) {
-        setCurrentStep(stepNumber - 1);
+        goToStep(stepNumber - 1);
         addLog(QString("Переход на шаг %1 из %2").arg(stepNumber).arg(trainingSteps.size()), "cyan");
     }
 }
@@ -456,10 +564,10 @@ void Network::updateDisplay() {
                            "<span style='color: #ffff00;'>Выход сети:</span> %6<br>"
                            "<span style='color: #ff6666;'>Ошибка:</span> %7<br>"
                            "<span style='color: #888888;'>─────────────────────</span><br>"
-                           "<span style='color: #888888; font-size:9pt;'>🎮 Управление:</span><br>"
+                           "<span style='color: #888888; font-size:9pt;'>  Управление:</span><br>"
                            "<span style='color: #cccccc; font-size:9pt;'>  • ЛКМ - листание шагов</span><br>"
-                           "<span style='color: #cccccc; font-size:9pt;'>  • Зажатие ЛКМ - автолистание</span><br>"
-                           "<span style='color: #cccccc; font-size:9pt;'>  • ПКМ - выбор шага</span><br>"
+                           "<span style='color: #cccccc; font-size:9pt;'>  • Зажатие ЛКМ (500мс задержка, затем 100мс интервал) - автолистание</span><br>"
+                           "<span style='color: #cccccc; font-size:9pt;'>  • ПКМ - выбор конкретного шага</span><br>"
                            "</p></body></html>")
                        .arg(currentStepIndex + 1)
                        .arg(trainingSteps.size())
@@ -474,10 +582,13 @@ void Network::updateDisplay() {
 
 void Network::updateVisualization() {
     if (neuralWidget) {
+        // Передаем размеры слоев
         neuralWidget->setLayerSizes(layerSizes);
+
+        // Передаем актуальные выходные значения нейронов
         neuralWidget->setLayerOutputs(layerOutputs);
 
-        // Собираем все веса для отрисовки связей
+        // Собираем веса для отрисовки связей
         QVector<QVector<QVector<double>>> allWeights;
         allWeights.resize(layers.size());
 
@@ -485,7 +596,6 @@ void Network::updateVisualization() {
             allWeights[layer].resize(layers[layer].size());
             for (int neuron = 0; neuron < layers[layer].size(); neuron++) {
                 if (layer == 0) {
-                    // Входной слой не имеет весов
                     allWeights[layer][neuron].resize(0);
                 } else {
                     allWeights[layer][neuron].resize(layerSizes[layer-1]);
@@ -497,5 +607,8 @@ void Network::updateVisualization() {
         }
 
         neuralWidget->setWeights(allWeights);
+
+        // Принудительная перерисовка
+        neuralWidget->update();
     }
 }
